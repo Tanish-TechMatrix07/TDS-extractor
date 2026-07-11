@@ -1,0 +1,646 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TDS Extractor</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --blue:        #1a56db;
+      --blue-light:  #e8f0fe;
+      --blue-dark:   #1240a8;
+      --green:       #057a55;
+      --green-light: #def7ec;
+      --red:         #c81e1e;
+      --red-light:   #fde8e8;
+      --yellow:      #92400e;
+      --yellow-light:#fef3c7;
+      --grey-50:     #f9fafb;
+      --grey-100:    #f3f4f6;
+      --grey-200:    #e5e7eb;
+      --grey-400:    #9ca3af;
+      --grey-600:    #4b5563;
+      --grey-800:    #1f2937;
+      --radius:      12px;
+      --shadow:      0 4px 24px rgba(0,0,0,.08);
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--grey-100);
+      min-height: 100vh;
+      display: flex; flex-direction: column; align-items: center;
+      padding: 32px 16px 64px;
+      color: var(--grey-800);
+    }
+
+    /* Header */
+    .header { text-align: center; margin-bottom: 32px; }
+    .header .logo {
+      width: 52px; height: 52px; background: var(--blue); border-radius: 14px;
+      display: inline-flex; align-items: center; justify-content: center; margin-bottom: 14px;
+    }
+    .header .logo svg { width: 28px; height: 28px; fill: #fff; }
+    .header h1  { font-size: 26px; font-weight: 700; }
+    .header p   { margin-top: 6px; font-size: 14px; color: var(--grey-600); }
+
+    /* Card */
+    .card {
+      background: #fff; border-radius: var(--radius); box-shadow: var(--shadow);
+      padding: 36px 40px; width: 100%; max-width: 660px;
+    }
+
+    /* Drop zone */
+    .drop-zone {
+      border: 2px dashed var(--grey-200); border-radius: 10px;
+      padding: 44px 24px; text-align: center; cursor: pointer;
+      transition: border-color .2s, background .2s;
+      position: relative; background: var(--grey-50);
+    }
+    .drop-zone:hover, .drop-zone.dragover {
+      border-color: var(--blue); background: var(--blue-light);
+    }
+    .drop-zone input[type="file"] {
+      position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%;
+    }
+    .drop-zone .dz-icon {
+      width: 48px; height: 48px; margin: 0 auto 16px;
+      background: var(--blue-light); border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .drop-zone .dz-icon svg { width: 24px; height: 24px; stroke: var(--blue); fill: none; stroke-width: 2; }
+    .drop-zone .primary-text   { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+    .drop-zone .secondary-text { font-size: 13px; color: var(--grey-400); }
+    .drop-zone .badge-row      { display: flex; gap: 8px; justify-content: center; margin-top: 14px; }
+    .badge {
+      font-size: 11px; font-weight: 600; padding: 3px 10px;
+      border-radius: 20px; background: var(--blue-light); color: var(--blue);
+      letter-spacing: .4px; text-transform: uppercase;
+    }
+    .multi-hint {
+      margin-top: 8px; font-size: 12px; color: var(--grey-400);
+    }
+
+    /* File list */
+    .file-list { display: none; margin-top: 16px; }
+    .file-list.visible { display: block; }
+    .file-list-header {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 8px;
+    }
+    .file-list-header span { font-size: 13px; font-weight: 600; color: var(--grey-600); }
+    .clear-all-btn {
+      font-size: 12px; color: var(--red); background: none; border: none;
+      cursor: pointer; font-weight: 500; padding: 2px 6px; border-radius: 4px;
+    }
+    .clear-all-btn:hover { background: var(--red-light); }
+
+    .file-item {
+      display: flex; align-items: center; gap: 12px;
+      padding: 10px 12px; background: var(--grey-50);
+      border: 1px solid var(--grey-200); border-radius: 8px; margin-bottom: 6px;
+    }
+    .file-item .fi-icon {
+      width: 34px; height: 34px; flex-shrink: 0; border-radius: 7px;
+      background: var(--blue-light); display: flex; align-items: center; justify-content: center;
+    }
+    .file-item .fi-icon svg { width: 16px; height: 16px; stroke: var(--blue); fill: none; stroke-width: 2; }
+    .file-item .fi-info { flex: 1; min-width: 0; }
+    .file-item .fi-name { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .file-item .fi-size { font-size: 11px; color: var(--grey-400); margin-top: 2px; }
+    .file-item .fi-remove {
+      background: none; border: none; cursor: pointer; padding: 4px; color: var(--grey-400);
+      transition: color .15s; flex-shrink: 0;
+    }
+    .file-item .fi-remove:hover { color: var(--red); }
+    .file-item .fi-remove svg { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 2; }
+
+    /* Convert button */
+    .convert-btn {
+      display: flex; align-items: center; justify-content: center; gap: 8px;
+      margin-top: 22px; width: 100%; padding: 13px;
+      background: var(--blue); color: #fff; border: none; border-radius: 8px;
+      font-size: 15px; font-weight: 600; cursor: pointer; transition: background .2s;
+    }
+    .convert-btn:hover:not(:disabled) { background: var(--blue-dark); }
+    .convert-btn:disabled { opacity: .5; cursor: not-allowed; }
+    .convert-btn svg { width: 18px; height: 18px; stroke: #fff; fill: none; stroke-width: 2; }
+
+    /* Progress */
+    .progress-wrap { display: none; margin-top: 18px; }
+    .progress-wrap.visible { display: block; }
+    .progress-label {
+      font-size: 13px; color: var(--grey-600); margin-bottom: 6px;
+      display: flex; justify-content: space-between;
+    }
+    .progress-bar-bg { height: 8px; background: var(--grey-200); border-radius: 4px; overflow: hidden; }
+    .progress-bar-fill { height: 100%; background: var(--blue); border-radius: 4px; width: 0%; transition: width .3s; }
+
+    /* Alerts */
+    .alert { display: none; margin-top: 18px; padding: 14px 16px; border-radius: 8px; font-size: 14px; line-height: 1.5; }
+    .alert.visible { display: flex; gap: 10px; align-items: flex-start; }
+    .alert svg { width: 18px; height: 18px; flex-shrink: 0; stroke: currentColor; fill: none; stroke-width: 2; margin-top: 1px; }
+    .alert.error   { background: var(--red-light);    color: var(--red); }
+    .alert.warning { background: var(--yellow-light); color: var(--yellow); }
+
+    /* Download */
+    .download-section { display: none; margin-top: 18px; padding: 18px; background: var(--green-light); border: 1px solid #a7f3d0; border-radius: 8px; }
+    .download-section.visible { display: block; }
+    .dl-title { font-size: 14px; font-weight: 600; color: var(--green); margin-bottom: 10px; display: flex; align-items: center; gap: 6px; }
+    .dl-title svg { width: 16px; height: 16px; stroke: var(--green); fill: none; stroke-width: 2; }
+    .dl-meta { font-size: 12px; color: var(--green); margin-bottom: 14px; display: flex; flex-wrap: wrap; gap: 12px; }
+    .download-btn {
+      display: inline-flex; align-items: center; gap: 8px; padding: 10px 20px;
+      background: var(--green); color: #fff; border: none; border-radius: 8px;
+      font-size: 14px; font-weight: 600; cursor: pointer; text-decoration: none; transition: opacity .2s;
+    }
+    .download-btn:hover { opacity: .88; }
+    .download-btn svg { width: 16px; height: 16px; stroke: #fff; fill: none; stroke-width: 2; }
+
+    /* Footer */
+    .footer { margin-top: 36px; font-size: 12px; color: var(--grey-400); text-align: center; }
+
+    /* Spinner */
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spinner {
+      width: 18px; height: 18px; border: 2px solid rgba(255,255,255,.35);
+      border-top-color: #fff; border-radius: 50%; animation: spin .7s linear infinite;
+    }
+
+    /* ── Filename modal ──────────────────────────────────────────────────── */
+    .modal-backdrop {
+      display: none;
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,.45);
+      z-index: 100;
+      align-items: center; justify-content: center;
+    }
+    .modal-backdrop.visible { display: flex; }
+
+    .modal {
+      background: #fff;
+      border-radius: 14px;
+      box-shadow: 0 8px 40px rgba(0,0,0,.18);
+      padding: 32px 32px 28px;
+      width: 100%; max-width: 420px;
+      margin: 16px;
+      animation: modalIn .18s ease;
+    }
+    @keyframes modalIn { from { transform: scale(.94); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+
+    .modal-title {
+      font-size: 17px; font-weight: 700; color: var(--grey-800);
+      margin-bottom: 6px; display: flex; align-items: center; gap: 8px;
+    }
+    .modal-title svg { width: 20px; height: 20px; stroke: var(--blue); fill: none; stroke-width: 2; flex-shrink: 0; }
+    .modal-sub {
+      font-size: 13px; color: var(--grey-600); margin-bottom: 20px;
+    }
+
+    .modal-input-wrap {
+      display: flex; align-items: center;
+      border: 1.5px solid var(--grey-200); border-radius: 8px; overflow: hidden;
+      transition: border-color .15s;
+    }
+    .modal-input-wrap:focus-within { border-color: var(--blue); }
+    .modal-input {
+      flex: 1; border: none; outline: none;
+      padding: 10px 12px; font-size: 14px; font-family: inherit;
+      color: var(--grey-800);
+    }
+    .modal-ext {
+      padding: 10px 12px 10px 0;
+      font-size: 14px; color: var(--grey-400);
+      background: #fff; white-space: nowrap;
+    }
+
+    .modal-actions {
+      display: flex; gap: 10px; margin-top: 22px; justify-content: flex-end;
+    }
+    .modal-cancel {
+      padding: 9px 18px; border: 1.5px solid var(--grey-200); border-radius: 8px;
+      background: #fff; color: var(--grey-600); font-size: 14px; font-weight: 500;
+      cursor: pointer; transition: background .15s;
+    }
+    .modal-cancel:hover { background: var(--grey-100); }
+    .modal-save {
+      padding: 9px 22px; border: none; border-radius: 8px;
+      background: var(--green); color: #fff; font-size: 14px; font-weight: 600;
+      cursor: pointer; transition: opacity .15s; display: flex; align-items: center; gap: 7px;
+    }
+    .modal-save:hover { opacity: .88; }
+    .modal-save svg { width: 15px; height: 15px; stroke: #fff; fill: none; stroke-width: 2; }
+  </style>
+</head>
+<body>
+
+<div class="header">
+  <div class="logo">
+    <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8" style="fill:rgba(255,255,255,.25)"/><line x1="16" y1="13" x2="8" y2="13" style="stroke:#fff;stroke-width:1.5;fill:none"/><line x1="16" y1="17" x2="8" y2="17" style="stroke:#fff;stroke-width:1.5;fill:none"/></svg>
+  </div>
+  <h1>TDS Extractor</h1>
+  <p>Upload one or more TDS input files and get one Merged Excel</p>
+</div>
+
+<div class="card">
+
+  <!-- Drop zone -->
+  <div class="drop-zone" id="dropZone">
+    <input type="file" id="fileInput" accept=".xls,.xlsx,.pdf" multiple />
+    <div class="dz-icon">
+      <svg viewBox="0 0 24 24"><polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg>
+    </div>
+    <div class="primary-text">Drop TDS files here</div>
+    <div class="secondary-text">or click to browse — multiple files supported</div>
+    <div class="badge-row">
+      <span class="badge">XLS</span>
+      <span class="badge">XLSX</span>
+      <span class="badge">PDF</span>
+    </div>
+    <div class="multi-hint">All uploaded files will be merged into a single output</div>
+  </div>
+
+  <!-- File list -->
+  <div class="file-list" id="fileList">
+    <div class="file-list-header">
+      <span id="fileCountLabel">0 files selected</span>
+      <button class="clear-all-btn" id="clearAllBtn">Remove all</button>
+    </div>
+    <div id="fileItems"></div>
+  </div>
+
+  <!-- Convert button -->
+  <button class="convert-btn" id="convertBtn" disabled>
+    <svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+    Generate 
+  </button>
+
+  <!-- Progress -->
+  <div class="progress-wrap" id="progressWrap">
+    <div class="progress-label">
+      <span id="progressText">Processing…</span>
+      <span id="progressPct">0%</span>
+    </div>
+    <div class="progress-bar-bg"><div class="progress-bar-fill" id="progressFill"></div></div>
+  </div>
+
+  <!-- Error -->
+  <div class="alert error" id="errorAlert">
+    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+    <span id="errorMsg"></span>
+  </div>
+
+  <!-- Warning -->
+  <div class="alert warning" id="warnAlert">
+    <svg viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+    <span id="warnMsg"></span>
+  </div>
+
+  <!-- Download -->
+  <div class="download-section" id="downloadSection">
+    <div class="dl-title">
+      <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+       Generated successfully
+    </div>
+    <div class="dl-meta">
+      <span id="metaRecords"></span>
+      <span id="metaFiles"></span>
+      <span id="metaDeductor"></span>
+    </div>
+    <a class="download-btn" id="downloadBtn" href="#">
+      <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      Download
+    </a>
+  </div>
+
+</div><!-- /.card -->
+
+<div class="footer">
+  TDS Extractor &bull; Supports XLS, XLSX &amp; PDF &bull; Multiple files merged into one output
+</div>
+
+<!-- ── Filename modal — must be in DOM before the script runs ─────────────── -->
+<div class="modal-backdrop" id="modalBackdrop">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+    <div class="modal-title">
+      <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+      <span id="modalTitle">Save As</span>
+    </div>
+    <div class="modal-sub">Enter a name for the downloaded Excel file</div>
+    <div class="modal-input-wrap">
+      <input class="modal-input" id="filenameInput" type="text" spellcheck="false"
+             placeholder="e.g. TDS_March_2026" maxlength="120" />
+      <span class="modal-ext">.xlsx</span>
+    </div>
+    <div class="modal-actions">
+      <button class="modal-cancel" id="modalCancel">Cancel</button>
+      <button class="modal-save" id="modalSave">
+        <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        Download
+      </button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  const dropZone        = document.getElementById('dropZone');
+  const fileInput       = document.getElementById('fileInput');
+  const fileList        = document.getElementById('fileList');
+  const fileCountLabel  = document.getElementById('fileCountLabel');
+  const fileItemsEl     = document.getElementById('fileItems');
+  const clearAllBtn     = document.getElementById('clearAllBtn');
+  const convertBtn      = document.getElementById('convertBtn');
+  const progressWrap    = document.getElementById('progressWrap');
+  const progressText    = document.getElementById('progressText');
+  const progressPct     = document.getElementById('progressPct');
+  const progressFill    = document.getElementById('progressFill');
+  const errorAlert      = document.getElementById('errorAlert');
+  const errorMsg        = document.getElementById('errorMsg');
+  const warnAlert       = document.getElementById('warnAlert');
+  const warnMsg         = document.getElementById('warnMsg');
+  const downloadSection = document.getElementById('downloadSection');
+  const downloadBtn     = document.getElementById('downloadBtn');
+  const metaRecords     = document.getElementById('metaRecords');
+  const metaFiles       = document.getElementById('metaFiles');
+  const metaDeductor    = document.getElementById('metaDeductor');
+
+  // Modal elements
+  const modalBackdrop  = document.getElementById('modalBackdrop');
+  const filenameInput  = document.getElementById('filenameInput');
+  const modalCancel    = document.getElementById('modalCancel');
+  const modalSave      = document.getElementById('modalSave');
+
+  // Master file list (use a Map keyed by name+size to avoid duplicates)
+  let selectedFiles = [];
+
+  // ── Drag & drop ────────────────────────────────────────────────────────────
+  dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+  dropZone.addEventListener('drop', e => {
+    e.preventDefault();
+    dropZone.classList.remove('dragover');
+    addFiles(Array.from(e.dataTransfer.files));
+  });
+  fileInput.addEventListener('change', () => {
+    addFiles(Array.from(fileInput.files));
+    fileInput.value = ''; // reset so same file can be re-added after removal
+  });
+
+  clearAllBtn.addEventListener('click', clearAll);
+
+  // ── Add files ──────────────────────────────────────────────────────────────
+  function addFiles(files) {
+    const allowed = ['xls', 'xlsx', 'pdf'];
+    const bad = [];
+
+    for (const f of files) {
+      const ext = f.name.split('.').pop().toLowerCase();
+      if (!allowed.includes(ext)) { bad.push(f.name); continue; }
+      // Deduplicate by name+size
+      const key = f.name + '_' + f.size;
+      if (!selectedFiles.find(x => x.name + '_' + x.size === key)) {
+        selectedFiles.push(f);
+      }
+    }
+
+    if (bad.length) showError(`Unsupported file(s): ${bad.join(', ')}. Use XLS, XLSX, or PDF.`);
+    else hideAlerts();
+
+    renderFileList();
+    downloadSection.classList.remove('visible');
+    if (downloadBtn._objectUrl) { URL.revokeObjectURL(downloadBtn._objectUrl); downloadBtn._objectUrl = null; }
+  }
+
+  // ── Render file list ───────────────────────────────────────────────────────
+  function renderFileList() {
+    fileItemsEl.innerHTML = '';
+    if (selectedFiles.length === 0) {
+      fileList.classList.remove('visible');
+      convertBtn.disabled = true;
+      return;
+    }
+
+    fileList.classList.add('visible');
+    convertBtn.disabled = false;
+    fileCountLabel.textContent = `${selectedFiles.length} file${selectedFiles.length > 1 ? 's' : ''} selected`;
+
+    selectedFiles.forEach((f, idx) => {
+      const item = document.createElement('div');
+      item.className = 'file-item';
+      item.innerHTML = `
+        <div class="fi-icon">
+          <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+        </div>
+        <div class="fi-info">
+          <div class="fi-name" title="${escHtml(f.name)}">${escHtml(f.name)}</div>
+          <div class="fi-size">${formatBytes(f.size)}</div>
+        </div>
+        <button class="fi-remove" data-idx="${idx}" title="Remove">
+          <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>`;
+      fileItemsEl.appendChild(item);
+    });
+
+    // Remove individual file
+    fileItemsEl.querySelectorAll('.fi-remove').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const idx = parseInt(btn.dataset.idx, 10);
+        selectedFiles.splice(idx, 1);
+        renderFileList();
+        if (selectedFiles.length === 0) downloadSection.classList.remove('visible');
+      });
+    });
+  }
+
+  function clearAll() {
+    selectedFiles = [];
+    renderFileList();
+    hideAlerts();
+    downloadSection.classList.remove('visible');
+    progressWrap.classList.remove('visible');
+  }
+
+  // ── Convert ────────────────────────────────────────────────────────────────
+  convertBtn.addEventListener('click', async () => {
+    if (selectedFiles.length === 0) return;
+    hideAlerts();
+    downloadSection.classList.remove('visible');
+    progressWrap.classList.add('visible');
+    setProgress(0, 'Uploading…');
+    convertBtn.disabled = true;
+    convertBtn.innerHTML = '<div class="spinner"></div> Processing…';
+
+    try {
+      const formData = new FormData();
+      for (const f of selectedFiles) formData.append('files', f);
+
+      const result = await uploadWithProgress(formData, pct => {
+        setProgress(pct < 90 ? pct : 90, pct < 90 ? 'Uploading…' : 'Generating …');
+      });
+
+      setProgress(100, 'Done');
+
+      const headers   = result.headers;
+      const records   = headers['x-records-count'] || '?';
+      const filesProc = headers['x-files-count']   || '?';
+      const deductor  = decodeURIComponent(headers['x-deductor-name'] || '');
+      const warnings  = headers['x-parse-warnings'] ? decodeURIComponent(headers['x-parse-warnings']) : '';
+
+      metaRecords.textContent  = `📄 ${records} records`;
+      metaFiles.textContent    = `📁 ${filesProc} file${filesProc > 1 ? 's' : ''} processed`;
+      metaDeductor.textContent = deductor ? `🏢 ${deductor}` : '';
+
+      if (warnings) {
+        warnMsg.textContent = 'Some files had warnings: ' + warnings;
+        warnAlert.classList.add('visible');
+      }
+
+      // Build download blob and store it — don't download yet
+      // The modal will handle the actual download after user enters filename
+      const blob = new Blob([result.data], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+      if (downloadBtn._objectUrl) URL.revokeObjectURL(downloadBtn._objectUrl);
+      const url = URL.createObjectURL(blob);
+      downloadBtn._objectUrl = url;
+
+      // Build suggested filename (without .xlsx — modal appends it)
+      const suggestedName = selectedFiles.length === 1
+        ? selectedFiles[0].name.replace(/\.[^.]+$/, '') + '_Annexure'
+        : 'TDS_Combined_Annexure';
+
+      downloadBtn._suggestedName = suggestedName;
+      downloadBtn.innerHTML = `
+        <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        Download`;
+
+      downloadSection.classList.add('visible');
+      progressWrap.classList.remove('visible');
+
+    } catch (err) {
+      progressWrap.classList.remove('visible');
+      showError(err.message || 'An unexpected error occurred.');
+    } finally {
+      convertBtn.disabled = false;
+      convertBtn.innerHTML = `
+        <svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+        Generate`;
+    }
+  });
+
+  // ── XHR upload with progress ───────────────────────────────────────────────
+  function uploadWithProgress(formData, onProgress) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/api/convert');
+      xhr.responseType = 'arraybuffer';
+
+      xhr.upload.addEventListener('progress', e => {
+        if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 85));
+      });
+
+      xhr.addEventListener('load', () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          const headers = {};
+          xhr.getAllResponseHeaders().split('\r\n').forEach(line => {
+            const idx = line.indexOf(':');
+            if (idx > 0) headers[line.slice(0, idx).trim().toLowerCase()] = line.slice(idx + 1).trim();
+          });
+          resolve({ data: xhr.response, headers });
+        } else {
+          try {
+            const json = JSON.parse(new TextDecoder().decode(xhr.response));
+            reject(new Error(json.error || `Server error ${xhr.status}`));
+          } catch {
+            reject(new Error(`Server error: ${xhr.status}`));
+          }
+        }
+      });
+      xhr.addEventListener('error', () => reject(new Error('Network error.')));
+      xhr.addEventListener('abort', () => reject(new Error('Upload aborted.')));
+      xhr.send(formData);
+    });
+  }
+
+  // ── Modal: ask for filename before download ────────────────────────────────
+  downloadBtn.addEventListener('click', (e) => {
+    e.preventDefault();
+    if (!downloadBtn._objectUrl) return;
+    // Start with empty input — user types their own name
+    filenameInput.value = '';
+    modalBackdrop.classList.add('visible');
+    setTimeout(() => { filenameInput.focus(); }, 50);
+  });
+
+  // Close modal on backdrop click
+  modalBackdrop.addEventListener('click', e => {
+    if (e.target === modalBackdrop) closeModal();
+  });
+
+  // Cancel button
+  modalCancel.addEventListener('click', closeModal);
+
+  // Save / Download button
+  modalSave.addEventListener('click', triggerDownload);
+
+  // Enter key inside input
+  filenameInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter') triggerDownload();
+    if (e.key === 'Escape') closeModal();
+  });
+
+  function triggerDownload() {
+    let name = filenameInput.value.trim();
+    if (!name) { filenameInput.focus(); return; }
+
+    // Strip any extension the user may have typed, then re-add .xlsx
+    name = name.replace(/\.(xlsx?|xls|pdf)$/i, '');
+    const finalName = name + '.xlsx';
+
+    // Create a temporary <a> and click it
+    const a = document.createElement('a');
+    a.href     = downloadBtn._objectUrl;
+    a.download = finalName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+
+    closeModal();
+
+    // Update the download button label to reflect chosen name
+    downloadBtn.innerHTML = `
+      <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      Downloaded: ${escHtml(finalName)}`;
+  }
+
+  function closeModal() {
+    modalBackdrop.classList.remove('visible');
+    filenameInput.value = '';
+  }
+
+  // ── Helpers ────────────────────────────────────────────────────────────────
+  function setProgress(pct, label) {
+    progressFill.style.width = pct + '%';
+    progressText.textContent = label;
+    progressPct.textContent  = pct + '%';
+  }
+  function showError(msg) { errorMsg.textContent = msg; errorAlert.classList.add('visible'); }
+  function hideAlerts()   { errorAlert.classList.remove('visible'); warnAlert.classList.remove('visible'); }
+  function formatBytes(b) {
+    if (b < 1024) return b + ' B';
+    if (b < 1048576) return (b/1024).toFixed(1) + ' KB';
+    return (b/1048576).toFixed(1) + ' MB';
+  }
+  function escHtml(s) {
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+})();
+</script>
+
+</body>
+</html>

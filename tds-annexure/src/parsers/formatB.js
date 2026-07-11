@@ -1,70 +1,215 @@
 'use strict';
 
 /**
- * Format B Parser — Kalrav Industries / Partner TDS PDF
+ * Format B Parser — Kalrav Industries / Partner TDS PDF & TDS Report PDF
  *
- * Confirmed raw PDF text structure from debug:
- *   Line: "PARTNER NAMEPAN NO.PARTNER INTEREST PARTNER REMUNERATION TOTALTDS 10%"
- *   Line: "ASHWINBHAI CHHAGANBHAI VIRADIYA (36%)AAYPV7109F6011719704669821769822"
- *   Line: "HIRENBHAI DHIRAJLAL RAIYANI (10%)BZJPR6210G1471632695717412017412"
- *   Line: "JENTIBHAI MOHANBHAI MARAKANA  (18%)ADRPM6134B1202444852316876716877"
- *   Line: "SUMITBHAI BABUBHAI TIMBADIYA (36%)AURPT0192P3824859704647953147953"
- *   Line: "TOTAL12510632695721520635152064"
- *   Line: "KALRAV INDUSTRIES"
- *   Line: "TAN NO. RKTK05989E"
+ * This parser runs pdf-parse in an isolated child process to:
+ *   1. Avoid event loop blocking for CPU-heavy PDF decoding.
+ *   2. Prevent library conflict/global state contamination between older pdfjs-dist and SheetJS (xlsx).
  *
- * Each data line = NAME + PAN (10 chars) + 4 numbers concatenated with no separator.
- * Numbers in order: INTEREST, REMUNERATION, TOTAL, TDS
- * We need: amount = TOTAL (3rd number), tds = TDS (4th number)
- *
- * Strategy:
- *   1. Find PAN in line (regex: 5 letters + 4 digits + 1 letter)
- *   2. Name = everything before the PAN
- *   3. Numbers string = everything after the PAN
- *   4. Parse numbers from the concatenated number string
+ * Supports two layouts:
+ *   - Layout A (TDS Report style PDFs: "JAN.PDF", "FEB.PDF")
+ *   - Layout B (Partner Remuneration PDFs: Kalrav Industries partner table)
  */
 
-const pdfParse = require('pdf-parse');
+const { spawn } = require('child_process');
 
 // PAN pattern: exactly 5 uppercase letters, 4 digits, 1 uppercase letter
 const PAN_RE = /([A-Z]{5}[0-9]{4}[A-Z])/;
 
+// ── Helper: Run pdf-parse in an isolated node process ────────────────────────
+function extractPdfTextWithChildProcess(buffer) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [
+      '-e',
+      `
+        const pdf = require('pdf-parse');
+        const chunks = [];
+        process.stdin.on('data', chunk => chunks.push(chunk));
+        process.stdin.on('end', async () => {
+          try {
+            const data = await pdf(Buffer.concat(chunks));
+            process.stdout.write('__JSON_START__' + JSON.stringify({ text: data.text }) + '__JSON_END__');
+          } catch (err) {
+            process.stdout.write('__JSON_START__' + JSON.stringify({ error: err.message }) + '__JSON_END__');
+          }
+        });
+      `
+    ]);
+
+    const stdoutChunks = [];
+    const stderrChunks = [];
+
+    child.stdout.on('data', chunk => stdoutChunks.push(chunk));
+    child.stderr.on('data', chunk => stderrChunks.push(chunk));
+
+    child.on('close', code => {
+      if (code !== 0) {
+        const stderrMsg = Buffer.concat(stderrChunks).toString();
+        return reject(new Error(`PDF worker exited with code ${code}: ${stderrMsg}`));
+      }
+      try {
+        const stdoutStr = Buffer.concat(stdoutChunks).toString();
+        const startIdx = stdoutStr.indexOf('__JSON_START__');
+        const endIdx = stdoutStr.indexOf('__JSON_END__');
+        if (startIdx === -1 || endIdx === -1) {
+          return reject(new Error(`PDF worker output is missing JSON boundaries: ${stdoutStr}`));
+        }
+        const jsonStr = stdoutStr.substring(startIdx + '__JSON_START__'.length, endIdx);
+        const output = JSON.parse(jsonStr);
+        if (output.error) {
+          return reject(new Error(output.error));
+        }
+        resolve(output.text);
+      } catch (err) {
+        reject(new Error(`Failed to parse PDF worker output: ${err.message}`));
+      }
+    });
+
+    child.stdin.write(buffer);
+    child.stdin.end();
+  });
+}
+
+// ── Main Entry Point ────────────────────────────────────────────────────────
 async function parseFormatB(buffer, filename) {
-  const data = await pdfParse(buffer);
-  const text = data.text;
+  const text = await extractPdfTextWithChildProcess(buffer);
 
   const lines = text
     .split('\n')
     .map(l => l.trim())
     .filter(l => l.length > 0);
 
-  // ── Extract deductor info ──────────────────────────────────────────────────
+  // Detect which layout is in the PDF:
+  // Layout A has "TDS Report" or "Nature Of Payment"
+  const isLayoutA = lines.some(l => /TDS\s*Report|Nature\s*Of\s*Payment/i.test(l));
+
+  if (isLayoutA) {
+    return parsePdfLayoutA(lines, filename);
+  } else {
+    return parsePdfLayoutB(lines, filename);
+  }
+}
+
+// ── Layout A Parser (TDS Report PDFs) ────────────────────────────────────────
+function parsePdfLayoutA(lines, filename) {
+  let deductorName = '';
+  let tan          = '';
+  let toDate       = '';
+
+  for (const line of lines) {
+    // Deductor name: first line that isn't a report header or digit
+    if (!deductorName) {
+      const isHeaderLine = /TDS\s*Report|Page|From\s*Date|Party\s*Name|Nature\s*Of\s*Payment|PAN\s*No/i.test(line);
+      if (!isHeaderLine && line.length > 3 && !/\d/.test(line)) {
+        deductorName = line.trim();
+      }
+    }
+
+    // TAN
+    if (!tan) {
+      const m = line.match(/\b([A-Z]{4}[0-9]{5}[A-Z])\b/);
+      if (m) tan = m[1].toUpperCase();
+    }
+
+    // To Date
+    if (!toDate) {
+      const m = line.match(/\bTo\s+(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4})/i);
+      if (m) {
+        const parts = m[1].split(/[\/\-]/);
+        if (parts.length === 3) {
+          toDate = `${parts[0].padStart(2, '0')}/${parts[1].padStart(2, '0')}/${parts[2]}`;
+        }
+      }
+    }
+  }
+
+  const records = [];
+  let currentSection = '';
+  let currentPan     = '';
+
+  for (const line of lines) {
+    // Section line
+    const sectionMatch = line.match(/Nature\s+Of\s+Payment\s*:\s*.*?\((\w+)\)/i);
+    if (sectionMatch) {
+      currentSection = sectionMatch[1].trim();
+      currentPan = '';
+      continue;
+    }
+
+    // PAN line
+    const panMatch = line.match(/PAN\s+No\s*:\s*([A-Z]{5}[0-9]{4}[A-Z])/i);
+    if (panMatch) {
+      currentPan = panMatch[1].toUpperCase();
+      continue;
+    }
+
+    // Skip headers and summary totals
+    if (/^\s*Total/i.test(line)) continue;
+    if (/Nature\s+Of\s+Payment/i.test(line)) continue;
+    if (/From\s+Date|TDS\s+Report/i.test(line)) continue;
+    if (/Party\s*Name|TDS\s*Reason/i.test(line)) continue;
+
+    if (!currentPan || !currentSection) continue;
+
+    // Match name followed by decimal numbers (exactly 2 decimals each)
+    const match = line.match(/^(.+?)((\d+\.\d{2})+)$/);
+    if (match) {
+      const partyName = match[1].trim();
+      if (/^\s*Total\s*$/i.test(partyName)) continue;
+
+      const nums = match[2].match(/\d+\.\d{2}/g);
+      if (!nums || nums.length < 4) continue;
+
+      const amount = parseFloat(nums[0]);
+      const rate   = parseFloat(nums[2]);
+      const tds    = parseFloat(nums[3]);
+
+      // Sanitise TDS / rate
+      const { finalTds, finalRate } = require('./formatA').sanitiseTds(tds, amount, rate, currentSection);
+
+      records.push({
+        deducteeCode: '02',
+        pan:     currentPan,
+        name:    partyName,
+        amount,
+        date:    toDate || endOfCurrentFY(),
+        section: currentSection,
+        rate:    finalRate,
+        tds:     finalTds,
+      });
+    }
+  }
+
+  if (!deductorName && lines.length > 0) {
+    deductorName = lines[0].trim();
+  }
+
+  return { deductorName, tan, records };
+}
+
+// ── Layout B Parser (Partner Remuneration PDFs) ──────────────────────────────
+function parsePdfLayoutB(lines, filename) {
   let deductorName = '';
   let tan = '';
   let section = '';
   let fyYear = endFYYear();
 
-  // Check filename for FY year first (e.g. "2025-26" or "2025-2026")
   if (filename) {
     const fyInName = filename.match(/20(\d{2})[–\-](?:20)?(\d{2})/);
     if (fyInName) fyYear = 2000 + parseInt(fyInName[2], 10);
   }
 
   for (const line of lines) {
-    // TAN: "TAN NO. RKTK05989E"
     const tanMatch = line.match(/TAN\s*(?:NO\.?)?\s*[:\.]?\s*([A-Z]{4}[0-9]{5}[A-Z])/i);
     if (tanMatch && !tan) tan = tanMatch[1].toUpperCase();
 
-    // Section code in line
     const secMatch = line.match(/\b(194[A-Z0-9]*)\b/);
     if (secMatch && !section) section = secMatch[1];
 
-    // FY year e.g. "2025-26"
     const fyMatch = line.match(/20(\d{2})[–\-](?:20)?(\d{2})/);
     if (fyMatch) fyYear = 2000 + parseInt(fyMatch[2], 10);
 
-    // Company name: appears AFTER the data rows (line 11 in debug = "KALRAV INDUSTRIES")
-    // It's a line with only uppercase letters and spaces, no digits, no special chars
     if (!deductorName && /^[A-Z][A-Z\s]+$/.test(line) && line.length > 3
         && !/TOTAL|PARTNER|INTEREST|REMUN|TAN|PAN/i.test(line)) {
       deductorName = line.trim();
@@ -74,7 +219,6 @@ async function parseFormatB(buffer, filename) {
   if (!section) section = '194';
   const date = `31/03/${fyYear}`;
 
-  // ── Parse data rows ────────────────────────────────────────────────────────
   const records = [];
 
   for (const line of lines) {
@@ -84,26 +228,16 @@ async function parseFormatB(buffer, filename) {
     const pan = panMatch[1];
     const panIdx = line.indexOf(pan);
 
-    // Name = everything before PAN
     const name = line.substring(0, panIdx).trim();
-
-    // Numbers string = everything after PAN
     const numStr = line.substring(panIdx + pan.length).trim();
 
-    // Skip header and total lines
     if (/TOTAL|PARTNER\s*NAME|PAN\s*NO/i.test(name)) continue;
     if (!name || name.length < 3) continue;
 
-    // Parse the concatenated number string into individual numbers
-    // The 4 numbers are: interest, remuneration, total, tds
     const nums = splitConcatenatedNumbers(numStr);
 
     if (nums.length < 2) continue;
 
-    // We need TOTAL (3rd) and TDS (4th)
-    // If we got 4 numbers: [interest, remuneration, total, tds]
-    // If we got 3 numbers: [interest+remuneration merged?, total, tds] — use last two
-    // If we got 2 numbers: [total, tds]
     let total, tds;
     if (nums.length >= 4) {
       total = nums[2];
@@ -117,8 +251,6 @@ async function parseFormatB(buffer, filename) {
     }
 
     if (!total || !tds) continue;
-
-    // Sanity check: tds should be much less than total
     if (tds >= total) continue;
 
     const rate = calcRate(tds, total);
@@ -138,29 +270,19 @@ async function parseFormatB(buffer, filename) {
   return { deductorName, tan, records };
 }
 
-// ── Split a concatenated number string into 4 numbers ────────────────────────
-// Confirmed example: "6011719704669821769822"
-//   → interest=601171, remuneration=97046, total=698217, tds=69822
-// Pattern: all 4 are integers. TDS ≈ 10% of TOTAL. TOTAL = interest + remuneration.
-//
-// Strategy: brute-force all split combinations (i1, i2, i3) where
-//   n1 = digits[0..i1], n2 = digits[i1..i2], n3 = digits[i2..i3], n4 = digits[i3..]
-//   and check: n3 ≈ n1+n2 (total = interest+remuneration) AND n4 ≈ 10%*n3
+// ── Concatenated Numbers Splitter ────────────────────────────────────────────
 function splitConcatenatedNumbers(str) {
   const digits = str.replace(/[^\d]/g, '');
   const len = digits.length;
   if (!len) return [];
 
-  // If there are natural separators (spaces etc), use them directly
   const parts = str.match(/\d+/g);
   if (parts && parts.length >= 2) {
     const nums = parts.map(Number);
     if (nums.length >= 4) return nums;
-    if (nums.length === 2) return nums; // total + tds
+    if (nums.length === 2) return nums;
   }
 
-  // Brute-force split into 4 numbers
-  // Each number is at least 1 digit and at most 10 digits
   const best = [];
   let bestScore = Infinity;
 
@@ -174,18 +296,15 @@ function splitConcatenatedNumbers(str) {
 
         if (!n1 || !n2 || !n3 || !n4) continue;
 
-        // Constraint 1: n3 should equal or be close to n1+n2 (total = int+remun)
         const sumDiff = Math.abs(n3 - (n1 + n2));
         const sumRatio = sumDiff / n3;
 
-        // Constraint 2: n4/n3 should be close to a standard rate (0.1, 0.02, etc.)
         const impliedRate = (n4 / n3) * 100;
         const standardRates = [2, 5, 10, 20, 30];
         const rateDiff = Math.min(...standardRates.map(r => Math.abs(impliedRate - r)));
 
-        // Score: lower is better. Weight sum constraint heavily.
-        if (sumRatio > 0.05) continue; // total must be within 5% of sum
-        if (rateDiff > 2) continue;    // rate must be within 2% of a standard rate
+        if (sumRatio > 0.05) continue;
+        if (rateDiff > 2) continue;
 
         const score = sumRatio + (rateDiff / 10);
         if (score < bestScore) {
@@ -199,8 +318,6 @@ function splitConcatenatedNumbers(str) {
 
   if (best.length === 4) return best;
 
-  // Fallback: try just finding total+tds (2-number split)
-  // total ≈ tds / 0.10, tds is last 4-6 digits
   for (let tdsLen = 4; tdsLen <= 7 && tdsLen < len; tdsLen++) {
     const tds   = parseInt(digits.slice(len - tdsLen), 10);
     const total = parseInt(digits.slice(0, len - tdsLen), 10);
@@ -212,8 +329,7 @@ function splitConcatenatedNumbers(str) {
   return parts ? parts.map(Number).filter(n => n > 0) : [];
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
+// ── Helpers ──────────────────────────────────────────────────────────────────
 function calcRate(tds, amount) {
   if (!amount || amount === 0) return 0;
   const raw = (tds / amount) * 100;
@@ -228,10 +344,14 @@ function calcRate(tds, amount) {
 }
 
 function endFYYear() {
-  // Return the end year of the current financial year
-  // FY runs April–March, so if we're in Jan 2026, FY end year is 2026
   const now = new Date();
   return now.getMonth() >= 3 ? now.getFullYear() + 1 : now.getFullYear();
+}
+
+function endOfCurrentFY() {
+  const now  = new Date();
+  const year = now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1;
+  return `31/03/${year + 1}`;
 }
 
 module.exports = { parseFormatB };

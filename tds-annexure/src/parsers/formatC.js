@@ -100,40 +100,85 @@ function parseFormatC(buffer) {
     /TDS\s*[\(\[]?Rs/i,
   ];
 
+  let headerFound = false;
   for (let i = 0; i < Math.min(rows.length, 10); i++) {
     const cells  = (rows[i] || []).map(str);
     const joined = cells.join(' ');
 
     const matchCount = HEADER_MARKERS.filter(re => re.test(joined)).length;
-    if (matchCount < 2) continue; // not a header row
+    if (matchCount >= 2) {
+      headerFound = true;
+      dataStartIdx = i + 1;
 
-    dataStartIdx = i + 1;
+      // Map each cell to a semantic column
+      for (let c = 0; c < cells.length; c++) {
+        const cell = cells[c];
+        if (!cell) continue;
 
-    // Map each cell to a semantic column
-    for (let c = 0; c < cells.length; c++) {
-      const cell = cells[c];
-      if (!cell) continue;
-
-      if (/Deductee\s*code/i.test(cell))                         colDeductee = c;
-      if (/PAN\s*of\s*deductee/i.test(cell))                     colPan      = c;
-      // "First Name" or fallback "Name" — but not "Party Name" in row-0 style
-      if (/First\s*Name/i.test(cell))                            colName     = c;
-      else if (/\bName\b/i.test(cell) && !/Party/i.test(cell) && !/PAN/i.test(cell))
-                                                                  colName     = c;
-      if (/Amount\s*of\s*payment/i.test(cell))                   colAmount   = c;
-      else if (/\bAmount\b/i.test(cell) && !/TDS/i.test(cell))  colAmount   = c;
-      if (/Date\s*on\s*which/i.test(cell))                       colDate     = c;
-      else if (/\bDate\b/i.test(cell))                           colDate     = c;
-      if (/Section\s*code/i.test(cell))                          colSection  = c;
-      else if (/\bSection\b/i.test(cell))                        colSection  = c;
-      if (/Rate\s*at\s*which/i.test(cell))                       colRate     = c;
-      else if (/\bRate\b/i.test(cell) && !/TDS/i.test(cell))    colRate     = c;
-      // TDS column: "TDS(Rs.)", "TDS (Rs.)", "TDS Rs", "TDS Amount" — must contain "TDS" + Rs or be last amount col
-      if (/TDS\s*[\(\[]?Rs/i.test(cell))                         colTds      = c;
-      else if (/\bTDS\b/i.test(cell) && !/Rate/i.test(cell) && !/Section/i.test(cell))
-                                                                  colTds      = c;
+        if (/Deductee\s*code/i.test(cell))                         colDeductee = c;
+        if (/PAN\s*of\s*deductee/i.test(cell))                     colPan      = c;
+        if (/First\s*Name/i.test(cell))                            colName     = c;
+        else if (/\bName\b/i.test(cell) && !/Party/i.test(cell) && !/PAN/i.test(cell))
+                                                                    colName     = c;
+        if (/Amount\s*of\s*payment/i.test(cell))                   colAmount   = c;
+        else if (/\bAmount\b/i.test(cell) && !/TDS/i.test(cell))  colAmount   = c;
+        if (/Date\s*on\s*which/i.test(cell))                       colDate     = c;
+        else if (/\bDate\b/i.test(cell))                           colDate     = c;
+        if (/Section\s*code/i.test(cell))                          colSection  = c;
+        else if (/\bSection\b/i.test(cell))                        colSection  = c;
+        if (/Rate\s*at\s*which/i.test(cell))                       colRate     = c;
+        else if (/\bRate\b/i.test(cell) && !/TDS/i.test(cell))    colRate     = c;
+        if (/TDS\s*[\(\[]?Rs/i.test(cell))                         colTds      = c;
+        else if (/\bTDS\b/i.test(cell) && !/Rate/i.test(cell) && !/Section/i.test(cell))
+                                                                    colTds      = c;
+      }
+      break;
     }
-    break;
+  }
+
+  // ── Heuristics Auto-Detection Fallback ────────────────────────────────────
+  // If no clear headers were found, scan first 30 rows to detect columns by content patterns
+  if (!headerFound) {
+    dataStartIdx = 0; // start parsing from the very beginning of the sheet
+    const colTypes = {};
+
+    const scanLimit = Math.min(rows.length, 30);
+    for (let i = 0; i < scanLimit; i++) {
+      const row = rows[i] || [];
+      for (let c = 0; c < row.length; c++) {
+        const val = str(row[c]);
+        if (!val) continue;
+
+        if (!colTypes[c]) colTypes[c] = { pan: 0, date: 0, section: 0, name: 0 };
+
+        // 1. PAN pattern (5 letters, 4 digits, 1 letter)
+        if (/^[A-Z]{5}[0-9]{4}[A-Z]$/i.test(val)) {
+          colTypes[c].pan++;
+        }
+        // 2. Date pattern
+        if (/^\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}$/.test(val) || (/^\d{5}$/.test(val) && parseInt(val, 10) > 40000 && parseInt(val, 10) < 60000)) {
+          colTypes[c].date++;
+        }
+        // 3. Section pattern (like 194, 194Q, 194H)
+        if (/^194[A-Z0-9]*$/i.test(val)) {
+          colTypes[c].section++;
+        }
+        // 4. Name pattern (alphabetical strings, excluding short codes and known markers)
+        if (val.length > 4 && !/^\d/.test(val) && !/^[A-Z]{5}[0-9]{4}[A-Z]$/i.test(val) && !/194/i.test(val) && !/[\/\-]/.test(val)) {
+          colTypes[c].name++;
+        }
+      }
+    }
+
+    // Assign columns based on maximum occurrences of type markers
+    for (const c of Object.keys(colTypes)) {
+      const idx = parseInt(c, 10);
+      const counts = colTypes[c];
+      if (counts.pan > 2)      colPan = idx;
+      if (counts.date > 2)     colDate = idx;
+      if (counts.section > 2)  colSection = idx;
+      if (counts.name > 5 && colName === 2) colName = idx;
+    }
   }
 
   // ── Step 3: Parse data rows ────────────────────────────────────────────────
@@ -172,14 +217,27 @@ function parseFormatC(buffer) {
     const { finalTds, finalRate } = sanitiseTds(tds, amount, rawRate, section);
 
     records.push({
-      deducteeCode: deducteeCode || '02',
+      deducteeCode:          deducteeCode || '02',
       pan,
       name,
+      middleName:            '',             // not available in this format
+      lastName:              '',             // not available in this format
+      address1:              '',             // not available in this format
+      address2:              '',             // not available in this format
+      state:                 '',             // not available in this format
+      pinCode:               '',             // not available in this format
       amount,
       date,
       section,
-      rate: finalRate,
-      tds:  finalTds,
+      rate:                  finalRate,
+      tds:                   finalTds,
+      dateOfTdsDeduction:    '',             // not available in this format
+      challanDetail:         '',             // not available in this format
+      dateOfFurnishingCert:  '',             // not available in this format
+      reasonForNonDeduction: '',             // not available in this format
+      paidByBookEntry:       '',             // not available in this format
+      certificateNo197:      '',             // not available in this format
+      partyReferenceNo:      '',             // not available in this format
     });
   }
 

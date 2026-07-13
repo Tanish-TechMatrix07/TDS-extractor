@@ -67,6 +67,7 @@ function parseFormatA(buffer) {
   // Column indices — will be overridden if a header row is found
   let nameColIdx   = FALLBACK_NAME;
   let amtColIdx    = FALLBACK_AMOUNT;
+  let assessableAmtColIdx = -1;
   let tdsColIdx    = FALLBACK_TDS;
   let rateColIdx   = -1;  // -1 = not present in this variant
   let headerRowIdx = -1;  // row index of the detected column header row
@@ -118,6 +119,11 @@ function parseFormatA(buffer) {
           amtColIdx = c;
         }
 
+        // Fallback Amount: "TDS Assessable Amount"
+        if (/TDS\s*Assessable/i.test(cell)) {
+          assessableAmtColIdx = c;
+        }
+
         // TDS: "Net TDS to be Paid"
         if (/Net\s*TDS/i.test(cell)) {
           tdsColIdx = c;
@@ -143,10 +149,66 @@ function parseFormatA(buffer) {
     if (i > 15) break;
   }
 
+  // ── Heuristics Auto-Detection Fallback ────────────────────────────────────
+  // If no header row was detected, scan first 30 rows to detect columns by content
+  if (headerRowIdx === -1) {
+    const colTypes = {};
+    const scanLimit = Math.min(rawRows.length, 30);
+    for (let i = 0; i < scanLimit; i++) {
+      const row = rawRows[i] || [];
+      for (let c = 0; c < row.length; c++) {
+        const val = str(row[c]);
+        if (!val) continue;
+
+        if (!colTypes[c]) colTypes[c] = { name: 0, amount: 0, rate: 0 };
+
+        const num = parseFloat(val.replace(/,/g, ''));
+        if (!isNaN(num)) {
+          if (num > 100) {
+            colTypes[c].amount++;
+          } else if (num > 0 && num <= 30) {
+            colTypes[c].rate++;
+          }
+        } else if (val.length > 5 && !/^\d/.test(val) && !/PAN|TAN|Nature|Date/i.test(val)) {
+          colTypes[c].name++;
+        }
+      }
+    }
+
+    // Assign name column
+    for (const c of Object.keys(colTypes)) {
+      const idx = parseInt(c, 10);
+      const counts = colTypes[c];
+      if (counts.name > 5) nameColIdx = idx;
+    }
+
+    // Determine numeric columns (Amount vs TDS) by average values
+    const numericCols = Object.keys(colTypes)
+      .map(Number)
+      .filter(c => {
+        const colVals = rawRows.slice(0, 30).map(r => r ? parseFloat(str(r[c]).replace(/,/g, '')) : NaN).filter(v => !isNaN(v));
+        return colVals.length > 3;
+      });
+
+    if (numericCols.length >= 2) {
+      const averages = numericCols.map(c => {
+        const vals = rawRows.slice(0, 30).map(r => r ? parseFloat(str(r[c]).replace(/,/g, '')) : 0).filter(v => v > 0);
+        const avg = vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
+        return { col: c, avg };
+      });
+      averages.sort((a, b) => b.avg - a.avg);
+      if (averages.length >= 2) {
+        amtColIdx = averages[0].col; // Larger numbers represent Amount
+        tdsColIdx = averages[1].col; // Smaller numbers represent TDS
+      }
+    }
+  }
+
   // ── Pass 2: parse data rows ─────────────────────────────────────────────────
   const records      = [];
   let currentSection = '';
   let currentPan     = '';
+  let lastName       = '';
 
   for (let i = 0; i < rawRows.length; i++) {
     const row = rawRows[i];
@@ -161,6 +223,7 @@ function parseFormatA(buffer) {
     if (sectionMatch) {
       currentSection = sectionMatch[1].trim();
       currentPan = '';
+      lastName = '';
       continue;
     }
 
@@ -168,6 +231,7 @@ function parseFormatA(buffer) {
     const panMatch = joined.match(/PAN\s+No\s*:\s*([A-Z]{5}[0-9]{4}[A-Z])/i);
     if (panMatch) {
       currentPan = panMatch[1].toUpperCase();
+      lastName = '';
       continue;
     }
 
@@ -177,14 +241,24 @@ function parseFormatA(buffer) {
     if (/From\s+Date|TDS\s+Report/i.test(joined))                          continue;
     if (/Total\s*Voucher|Net\s*TDS|Party\s*Name.*TDS/i.test(joined))       continue;
 
-    // Require both PAN and section to have been seen
-    if (!currentPan || !currentSection) continue;
+    // Require at least section to have been seen (PAN is optional)
+    if (!currentSection) continue;
 
     // ── Read values by detected column positions ─────────────────────────
-    const partyName = str(row[nameColIdx]);
+    let partyName = str(row[nameColIdx]);
+    if (partyName && !/^\s*Total\s*$/i.test(partyName)) {
+      lastName = partyName;
+    } else {
+      partyName = lastName;
+    }
     if (!partyName || /^\s*Total\s*$/i.test(partyName)) continue;
 
-    const amount = toNum(row[amtColIdx]);
+    let amount = 0;
+    if (assessableAmtColIdx >= 0 && toNum(row[assessableAmtColIdx]) > 0) {
+      amount = toNum(row[assessableAmtColIdx]);
+    } else {
+      amount = toNum(row[amtColIdx]);
+    }
     const tds    = toNum(row[tdsColIdx]);
     if (!amount && !tds) continue;
 
@@ -197,14 +271,27 @@ function parseFormatA(buffer) {
     const { finalTds, finalRate } = sanitiseTds(tds, amount, rawRate, currentSection);
 
     records.push({
-      deducteeCode: '02',
-      pan:     currentPan,
-      name:    partyName,
+      deducteeCode:          '02',
+      pan:                   currentPan,
+      name:                  partyName,
+      middleName:            '',             // not available in this format
+      lastName:              '',             // not available in this format
+      address1:              '',             // not available in this format
+      address2:              '',             // not available in this format
+      state:                 '',             // not available in this format
+      pinCode:               '',             // not available in this format
       amount,
-      date:    toDate || endOfCurrentFY(),
-      section: currentSection,
-      rate:    finalRate,
-      tds:     finalTds,
+      date:                  toDate || endOfCurrentFY(),
+      section:               currentSection,
+      rate:                  finalRate,
+      tds:                   finalTds,
+      dateOfTdsDeduction:    '',             // not available in this format
+      challanDetail:         '',             // not available in this format
+      dateOfFurnishingCert:  '',             // not available in this format
+      reasonForNonDeduction: '',             // not available in this format
+      paidByBookEntry:       '',             // not available in this format
+      certificateNo197:      '',             // not available in this format
+      partyReferenceNo:      '',             // not available in this format
     });
   }
 

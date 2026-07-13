@@ -127,6 +127,7 @@ function parsePdfLayoutA(lines, filename) {
   const records = [];
   let currentSection = '';
   let currentPan     = '';
+  let lastName       = '';
 
   for (const line of lines) {
     // Section line
@@ -134,6 +135,7 @@ function parsePdfLayoutA(lines, filename) {
     if (sectionMatch) {
       currentSection = sectionMatch[1].trim();
       currentPan = '';
+      lastName = '';
       continue;
     }
 
@@ -141,6 +143,7 @@ function parsePdfLayoutA(lines, filename) {
     const panMatch = line.match(/PAN\s+No\s*:\s*([A-Z]{5}[0-9]{4}[A-Z])/i);
     if (panMatch) {
       currentPan = panMatch[1].toUpperCase();
+      lastName = '';
       continue;
     }
 
@@ -150,18 +153,31 @@ function parsePdfLayoutA(lines, filename) {
     if (/From\s+Date|TDS\s+Report/i.test(line)) continue;
     if (/Party\s*Name|TDS\s*Reason/i.test(line)) continue;
 
-    if (!currentPan || !currentSection) continue;
+    // Require at least section to have been seen (PAN is optional)
+    if (!currentSection) continue;
 
     // Match name followed by decimal numbers (exactly 2 decimals each)
     const match = line.match(/^(.+?)((\d+\.\d{2})+)$/);
     if (match) {
-      const partyName = match[1].trim();
+      let partyName = match[1].trim();
       if (/^\s*Total\s*$/i.test(partyName)) continue;
+
+      const isSubCategory = /^\s*(?:INTEREST|REMUNERATION|COMMISSION|SALARY|BONUS)\s*$/i.test(partyName);
+      if (partyName && !isSubCategory) {
+        lastName = partyName;
+      } else if (lastName) {
+        partyName = lastName;
+      }
 
       const nums = match[2].match(/\d+\.\d{2}/g);
       if (!nums || nums.length < 4) continue;
 
-      const amount = parseFloat(nums[0]);
+      let amount = 0;
+      if (nums.length > 1 && parseFloat(nums[1]) > 0) {
+        amount = parseFloat(nums[1]);
+      } else {
+        amount = parseFloat(nums[0]);
+      }
       const rate   = parseFloat(nums[2]);
       const tds    = parseFloat(nums[3]);
 
@@ -169,14 +185,27 @@ function parsePdfLayoutA(lines, filename) {
       const { finalTds, finalRate } = require('./formatA').sanitiseTds(tds, amount, rate, currentSection);
 
       records.push({
-        deducteeCode: '02',
-        pan:     currentPan,
-        name:    partyName,
+        deducteeCode:          '02',
+        pan:                   currentPan,
+        name:                  partyName,
+        middleName:            '',             // not available in this format
+        lastName:              '',             // not available in this format
+        address1:              '',             // not available in this format
+        address2:              '',             // not available in this format
+        state:                 '',             // not available in this format
+        pinCode:               '',             // not available in this format
         amount,
-        date:    toDate || endOfCurrentFY(),
-        section: currentSection,
-        rate:    finalRate,
-        tds:     finalTds,
+        date:                  toDate || endOfCurrentFY(),
+        section:               currentSection,
+        rate:                  finalRate,
+        tds:                   finalTds,
+        dateOfTdsDeduction:    '',             // not available in this format
+        challanDetail:         '',             // not available in this format
+        dateOfFurnishingCert:  '',             // not available in this format
+        reasonForNonDeduction: '',             // not available in this format
+        paidByBookEntry:       '',             // not available in this format
+        certificateNo197:      '',             // not available in this format
+        partyReferenceNo:      '',             // not available in this format
       });
     }
   }
@@ -223,13 +252,22 @@ function parsePdfLayoutB(lines, filename) {
 
   for (const line of lines) {
     const panMatch = line.match(PAN_RE);
-    if (!panMatch) continue;
+    let pan = '';
+    let name = '';
+    let numStr = '';
 
-    const pan = panMatch[1];
-    const panIdx = line.indexOf(pan);
-
-    const name = line.substring(0, panIdx).trim();
-    const numStr = line.substring(panIdx + pan.length).trim();
+    if (panMatch) {
+      pan = panMatch[1];
+      const panIdx = line.indexOf(pan);
+      name = line.substring(0, panIdx).trim();
+      numStr = line.substring(panIdx + pan.length).trim();
+    } else {
+      // PAN is missing — separate name and trailing concatenated digits
+      const match = line.match(/^(.+?)([\d\s]+)$/);
+      if (!match) continue;
+      name = match[1].trim();
+      numStr = match[2].trim();
+    }
 
     if (/TOTAL|PARTNER\s*NAME|PAN\s*NO/i.test(name)) continue;
     if (!name || name.length < 3) continue;
@@ -256,14 +294,27 @@ function parsePdfLayoutB(lines, filename) {
     const rate = calcRate(tds, total);
 
     records.push({
-      deducteeCode: '02',
+      deducteeCode:          '02',
       pan,
       name,
-      amount: total,
+      middleName:            '',             // not available in this format
+      lastName:              '',             // not available in this format
+      address1:              '',             // not available in this format
+      address2:              '',             // not available in this format
+      state:                 '',             // not available in this format
+      pinCode:               '',             // not available in this format
+      amount:                total,
       date,
       section,
       rate,
       tds,
+      dateOfTdsDeduction:    '',             // not available in this format
+      challanDetail:         '',             // not available in this format
+      dateOfFurnishingCert:  '',             // not available in this format
+      reasonForNonDeduction: '',             // not available in this format
+      paidByBookEntry:       '',             // not available in this format
+      certificateNo197:      '',             // not available in this format
+      partyReferenceNo:      '',             // not available in this format
     });
   }
 

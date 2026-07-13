@@ -147,12 +147,12 @@ app.post('/api/convert', upload.any(), async (req, res) => {
     }
 
     // ── Generate Annexure ────────────────────────────────────────────────────
-    const excelBuffer = await generateAnnexure(deductorName, tan, allRecords);
-
-    // ── Output filename ──────────────────────────────────────────────────────
     const baseName = uniqueFiles.length === 1
       ? path.basename(uniqueFiles[0].originalname, path.extname(uniqueFiles[0].originalname))
       : 'TDS_Combined';
+    const excelBuffer = await generateAnnexure(deductorName, tan, allRecords, baseName);
+
+    // ── Output filename ──────────────────────────────────────────────────────
     const outName = `${baseName}_Annexure.xlsx`;
 
     // ── Send ─────────────────────────────────────────────────────────────────

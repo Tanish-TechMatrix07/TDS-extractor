@@ -336,7 +336,7 @@
     <div class="modal-input-wrap">
       <input class="modal-input" id="filenameInput" type="text" spellcheck="false"
              placeholder="e.g. TDS_March_2026" maxlength="120" />
-      <span class="modal-ext">.xlsx</span>
+      <span class="modal-ext">.xls</span>
     </div>
     <div class="modal-actions">
       <button class="modal-cancel" id="modalCancel">Cancel</button>
@@ -507,13 +507,13 @@
       // Build download blob and store it — don't download yet
       // The modal will handle the actual download after user enters filename
       const blob = new Blob([result.data], {
-        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        type: 'application/vnd.ms-excel',
       });
       if (downloadBtn._objectUrl) URL.revokeObjectURL(downloadBtn._objectUrl);
       const url = URL.createObjectURL(blob);
       downloadBtn._objectUrl = url;
 
-      // Build suggested filename (without .xlsx — modal appends it)
+      // Build suggested filename (without .xls — modal appends it)
       const suggestedName = selectedFiles.length === 1
         ? selectedFiles[0].name.replace(/\.[^.]+$/, '') + '_Annexure'
         : 'TDS_Combined_Annexure';
@@ -602,9 +602,9 @@
     let name = filenameInput.value.trim();
     if (!name) { filenameInput.focus(); return; }
 
-    // Strip any extension the user may have typed, then re-add .xlsx
+    // Strip any extension the user may have typed, then re-add .xls
     name = name.replace(/\.(xlsx?|xls|pdf)$/i, '');
-    const finalName = name + '.xlsx';
+    const finalName = name + '.xls';
 
     // Create a temporary <a> and click it
     const a = document.createElement('a');

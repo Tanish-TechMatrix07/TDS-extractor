@@ -35,16 +35,17 @@
  *   U  Deductee/Party Reference No
  *
  * Styling:
- *   - Header row: bold, light-blue fill, all borders
+ *   - Header row: bold, light-purple fill, all borders
  *   - Data rows: all borders
- *   - Numeric columns (J, M, N): right-aligned, number format
+ *   - Numeric columns: right-aligned, number format
  *   - Date/centre columns: centre-aligned
  *   - Column widths set to sensible values
  */
 
 const ExcelJS = require('exceljs');
+const XLSX = require('xlsx');
 
-async function generateAnnexure(deductorName, tan, records, sheetName) {
+async function generateAnnexure(deductorName, tan, records, sheetName, challanRecords) {
   const workbook = new ExcelJS.Workbook();
   workbook.creator = 'TDS Annexure Generator';
   workbook.created = new Date();
@@ -129,7 +130,7 @@ async function generateAnnexure(deductorName, tan, records, sheetName) {
     cell.fill = {
       type: 'pattern',
       pattern: 'solid',
-      fgColor: { argb: 'FFD9E1F2' }, // light blue
+      fgColor: { argb: 'FFD4C5F9' }, // light purple
     };
     cell.border = {
       top:    { style: 'thin' },
@@ -241,9 +242,131 @@ async function generateAnnexure(deductorName, tan, records, sheetName) {
     });
   }
 
-  // ── Return as buffer ────────────────────────────────────────────────────────
-  const buffer = await workbook.xlsx.writeBuffer();
-  return buffer;
+  // ── Sheet 2: Challan Details (always present, even if empty) ─────────────
+  const challanSheet = workbook.addWorksheet('Challan');
+  const chRecords = challanRecords || [];
+
+  // Row 1: Header info
+  const chHeaderRow = challanSheet.addRow([
+    'Party Name :',
+    deductorName || '',
+    'TAN :',
+    tan || '',
+  ]);
+  for (let c = 5; c <= 16; c++) { chHeaderRow.getCell(c).value = ''; }
+  chHeaderRow.font = { bold: true, size: 11 };
+  chHeaderRow.getCell(1).font = { bold: true, size: 11 };
+  chHeaderRow.getCell(3).font = { bold: true, size: 11 };
+  chHeaderRow.getCell(4).font = { bold: true, size: 11 };
+  chHeaderRow.height = 18;
+
+  // Row 2: Column headers
+  const CHALLAN_HEADERS = [
+    'S. No.',
+    'Section Code',
+    'TDS (Rs.)',
+    'Surcharge (Rs.)',
+    'Education Cess (Rs.)',
+    'Higher Education Cess',
+    'Interest (Rs.)',
+    'Other (Rs.)',
+    'Fees Amount (Rs.)',
+    'Cheque/DD No.',
+    'BSR Code',
+    'Date on which Tax Deposited',
+    'Challan Serial No.',
+    'Book Entry?',
+    'Minor Head',
+  ];
+
+  const chColRow = challanSheet.addRow(CHALLAN_HEADERS);
+  chColRow.height = 28;
+  chColRow.eachCell((cell) => {
+    cell.font = { bold: true, size: 10, color: { argb: 'FF000000' } };
+    cell.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD4C5F9' }, // light purple
+    };
+    cell.border = {
+      top:    { style: 'thin' },
+      left:   { style: 'thin' },
+      bottom: { style: 'thin' },
+      right:  { style: 'thin' },
+    };
+    cell.alignment = { vertical: 'middle', wrapText: true, horizontal: 'center' };
+  });
+
+  // Column widths
+  challanSheet.columns = [
+    { width: 10 },  // A  S. No.
+    { width: 14 },  // B  Section Code
+    { width: 14 },  // C  TDS (Rs.)
+    { width: 16 },  // D  Surcharge (Rs.)
+    { width: 18 },  // E  Education Cess (Rs.)
+    { width: 20 },  // F  Higher Education Cess
+    { width: 14 },  // G  Interest (Rs.)
+    { width: 14 },  // H  Other (Rs.)
+    { width: 16 },  // I  Fees Amount (Rs.)
+    { width: 18 },  // J  Cheque/DD No.
+    { width: 14 },  // K  BSR Code
+    { width: 22 },  // L  Date on which Tax Deposited
+    { width: 20 },  // M  Challan Serial No.
+    { width: 14 },  // N  Book Entry?
+    { width: 14 },  // O  Minor Head
+  ];
+
+  // Data rows (only if there are records)
+  for (let i = 0; i < chRecords.length; i++) {
+    const rec = chRecords[i];
+    const row = challanSheet.addRow([
+      rec.srNo        || '',
+      rec.section     || '',
+      rec.tds         || 0,
+      rec.surcharge   || 0,
+      rec.eduCess     || 0,
+      rec.higherEduCess || 0,
+      rec.interest    || 0,
+      rec.other       || 0,
+      rec.feesAmount  || 0,
+      rec.chequeNo    || '',
+      rec.bsrCode     || '',
+      rec.depositDate || '',
+      rec.challanNo   || '',
+      rec.bookEntry   || '',
+      rec.minorHead   || '',
+    ]);
+
+    row.height = 16;
+    row.eachCell((cell, colNumber) => {
+      cell.border = {
+        top:    { style: 'thin' },
+        left:   { style: 'thin' },
+        bottom: { style: 'thin' },
+        right:  { style: 'thin' },
+      };
+      cell.font = { size: 10 };
+
+      // Numeric columns right-aligned
+      if ([3, 4, 5, 6, 7, 8, 9].includes(colNumber)) {
+        cell.alignment = { horizontal: 'right', vertical: 'middle' };
+        cell.numFmt = '#,##0';
+      } else if ([1, 2, 12, 15].includes(colNumber)) {
+        cell.alignment = { horizontal: 'center', vertical: 'middle' };
+      } else {
+        cell.alignment = { horizontal: 'left', vertical: 'middle' };
+      }
+    });
+  }
+
+  // ── Write as .xlsx buffer, then convert to .xls (biff8) ────────────────────
+  const xlsxBuffer = await workbook.xlsx.writeBuffer();
+
+  // Convert xlsx → xls (biff8) using the xlsx library
+  const xlsWorkbook = XLSX.read(xlsxBuffer, { type: 'buffer' });
+  const xlsBuffer = XLSX.write(xlsWorkbook, { bookType: 'biff8', type: 'buffer' });
+
+  return xlsBuffer;
 }
 
 module.exports = { generateAnnexure };

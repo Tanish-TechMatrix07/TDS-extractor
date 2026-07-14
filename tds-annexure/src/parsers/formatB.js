@@ -12,7 +12,7 @@
  *   - Layout B (Partner Remuneration PDFs: Kalrav Industries partner table)
  */
 
-const { spawn } = require('child_process');
+const cp = require('child_process');
 
 // PAN pattern: exactly 5 uppercase letters, 4 digits, 1 uppercase letter
 const PAN_RE = /([A-Z]{5}[0-9]{4}[A-Z])/;
@@ -20,7 +20,7 @@ const PAN_RE = /([A-Z]{5}[0-9]{4}[A-Z])/;
 // ── Helper: Run pdf-parse in an isolated node process ────────────────────────
 function extractPdfTextWithChildProcess(buffer) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [
+    const child = cp.spawn(process.execPath, [
       '-e',
       `
         const pdf = require('pdf-parse');
@@ -128,6 +128,7 @@ function parsePdfLayoutA(lines, filename) {
   let currentSection = '';
   let currentPan     = '';
   let lastName       = '';
+  let pendingName    = '';
 
   for (const line of lines) {
     // Section line
@@ -136,11 +137,12 @@ function parsePdfLayoutA(lines, filename) {
       currentSection = sectionMatch[1].trim();
       currentPan = '';
       lastName = '';
+      pendingName = '';
       continue;
     }
 
     // PAN line
-    const panMatch = line.match(/PAN\s+No\s*:\s*([A-Z]{5}[0-9]{4}[A-Z])/i);
+    const panMatch = line.match(/PAN\s+No\.?\s*:\s*([A-Z]{5}[0-9]{4}[A-Z])/i);
     if (panMatch) {
       currentPan = panMatch[1].toUpperCase();
       lastName = '';
@@ -157,10 +159,28 @@ function parsePdfLayoutA(lines, filename) {
     if (!currentSection) continue;
 
     // Match name followed by decimal numbers (exactly 2 decimals each)
-    const match = line.match(/^(.+?)((\d+\.\d{2})+)$/);
+    const match = line.match(/^(.*?)\s*((?:\d+\.\d{2}\s*)+)$/);
+    if (!match && !/^\s*$/.test(line)) {
+      if (line.length > 3 && !/^[\d\s\.]+$/.test(line)) {
+        pendingName = pendingName ? pendingName + ' ' + line.trim() : line.trim();
+      }
+      continue;
+    }
+
     if (match) {
       let partyName = match[1].trim();
-      if (/^\s*Total\s*$/i.test(partyName)) continue;
+      if (/^\s*Total\s*$/i.test(partyName)) {
+        pendingName = '';
+        continue;
+      }
+
+      // If partyName is very short (e.g. just '6'), it might be a remnant, use pendingName if available
+      if ((partyName.length <= 2 || /^\d+$/.test(partyName)) && pendingName) {
+        partyName = pendingName;
+      } else if (pendingName && !/^\d+$/.test(partyName) && partyName.length > 2) {
+        partyName = pendingName + ' ' + partyName;
+      }
+      pendingName = '';
 
       const isSubCategory = /^\s*(?:INTEREST|REMUNERATION|COMMISSION|SALARY|BONUS)\s*$/i.test(partyName);
       if (partyName && !isSubCategory) {
@@ -170,16 +190,44 @@ function parsePdfLayoutA(lines, filename) {
       }
 
       const nums = match[2].match(/\d+\.\d{2}/g);
-      if (!nums || nums.length < 4) continue;
+      if (!nums || nums.length < 3) continue;
 
-      let amount = 0;
-      if (nums.length > 1 && parseFloat(nums[1]) > 0) {
-        amount = parseFloat(nums[1]);
-      } else {
-        amount = parseFloat(nums[0]);
+      let amount = 0, rate = 0, tds = 0;
+      let rateIndex = -1;
+      
+      // Find rate (usually <= 30) from the middle of the array
+      for (let j = 1; j < nums.length - 1; j++) {
+        if (parseFloat(nums[j]) <= 40 && parseFloat(nums[j]) > 0) {
+          rateIndex = j;
+          break;
+        }
       }
-      const rate   = parseFloat(nums[2]);
-      const tds    = parseFloat(nums[3]);
+
+      if (rateIndex > 0) {
+        amount = parseFloat(nums[rateIndex - 1]);
+        rate   = parseFloat(nums[rateIndex]);
+        tds    = parseFloat(nums[rateIndex + 1]);
+
+        // Fix amount if it got concatenated with a prefix (e.g. 50379161.10 instead of 379161.10)
+        if (tds > 0 && rate > 0) {
+          const expectedAmount = (tds * 100) / rate;
+          if (amount > expectedAmount * 10) {
+            const strAmt = amount.toFixed(2);
+            for (let i = 1; i < strAmt.length - 3; i++) {
+                const sub = parseFloat(strAmt.substring(i));
+                if (Math.abs(sub - expectedAmount) <= expectedAmount * 0.1) {
+                    amount = sub;
+                    break;
+                }
+            }
+          }
+        }
+      } else {
+        // Fallback for unexpected formats
+        amount = nums.length > 1 && parseFloat(nums[1]) > 0 ? parseFloat(nums[1]) : parseFloat(nums[0]);
+        rate   = parseFloat(nums[2] || 0);
+        tds    = parseFloat(nums[3] || 0);
+      }
 
       // Sanitise TDS / rate
       const { finalTds, finalRate } = require('./formatA').sanitiseTds(tds, amount, rate, currentSection);

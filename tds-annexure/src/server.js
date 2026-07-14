@@ -139,24 +139,41 @@ app.post('/api/convert', upload.any(), async (req, res) => {
       }
     }
 
-    if (allRecords.length === 0) {
+    if (allRecords.length === 0 && !results.some(r => r.parsed.challanRecords?.length > 0)) {
       return res.status(422).json({
         error: 'Files were parsed but no TDS records were found.',
         details: errors,
       });
     }
 
+    // Collect challan records from all files (dedup by section+tds+bsr+challanNo)
+    const seenChallan = new Set();
+    const allChallanRecords = [];
+    for (const r of results) {
+      for (const rec of (r.parsed.challanRecords || [])) {
+        const section   = (rec.section   || '').toUpperCase().trim();
+        const tds       = String(rec.tds  || 0);
+        const bsr       = (rec.bsrCode   || '').trim();
+        const challanNo = (rec.challanNo || '').trim();
+        const fingerprint = `${section}|${tds}|${bsr}|${challanNo}`;
+        if (!seenChallan.has(fingerprint)) {
+          seenChallan.add(fingerprint);
+          allChallanRecords.push(rec);
+        }
+      }
+    }
+
     // ── Generate Annexure ────────────────────────────────────────────────────
     const baseName = uniqueFiles.length === 1
       ? path.basename(uniqueFiles[0].originalname, path.extname(uniqueFiles[0].originalname))
       : 'TDS_Combined';
-    const excelBuffer = await generateAnnexure(deductorName, tan, allRecords, baseName);
+    const excelBuffer = await generateAnnexure(deductorName, tan, allRecords, baseName, allChallanRecords);
 
     // ── Output filename ──────────────────────────────────────────────────────
-    const outName = `${baseName}_Annexure.xlsx`;
+    const outName = `${baseName}_Annexure.xls`;
 
     // ── Send ─────────────────────────────────────────────────────────────────
-    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Type', 'application/vnd.ms-excel');
     res.setHeader('Content-Disposition', `attachment; filename="${outName}"`);
     res.setHeader('X-Records-Count',  String(allRecords.length));
     res.setHeader('X-Files-Count',    String(uniqueFiles.length));

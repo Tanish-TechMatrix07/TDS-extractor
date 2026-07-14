@@ -121,7 +121,7 @@ function parseFormatC(buffer) {
         else if (/\bName\b/i.test(cell) && !/Party/i.test(cell) && !/PAN/i.test(cell))
                                                                     colName     = c;
         if (/Amount\s*of\s*payment/i.test(cell))                   colAmount   = c;
-        else if (/\bAmount\b/i.test(cell) && !/TDS/i.test(cell))  colAmount   = c;
+        else if (/\bAmount\b/i.test(cell) && !/TDS/i.test(cell) && !/Date/i.test(cell))  colAmount   = c;
         if (/Date\s*on\s*which/i.test(cell))                       colDate     = c;
         else if (/\bDate\b/i.test(cell))                           colDate     = c;
         if (/Section\s*code/i.test(cell))                          colSection  = c;
@@ -241,7 +241,150 @@ function parseFormatC(buffer) {
     });
   }
 
-  return { deductorName, tan, records };
+  // ── Step 4: Parse Challan sheet if present ────────────────────────────────
+  const challanRecords = parseChallanSheet(workbook);
+
+  return { deductorName, tan, records, challanRecords };
+}
+
+// ── Challan Sheet Parser ──────────────────────────────────────────────────────
+// Extracts challan data from the "Challan" sheet (if it exists).
+// The Challan sheet typically has:
+//   Row 0: Party Name / TAN
+//   Row 3: Column headers
+//   Row 4+: Data rows
+//
+// Columns (0-indexed):
+//   0:  S. No.
+//   1:  Section Code
+//   2:  TDS(Rs.)
+//   3:  Surcharge (Rs.)
+//   4:  Education Cess (Rs.)
+//   5:  Higher Education Cess
+//   6:  Interest (Rs.)
+//   7:  Other (Rs.)
+//   8:  Fees Amount (Rs.)
+//   9:  Cheque/DD No.
+//   10: BSR Code
+//   11: Date on which Tax Deposited
+//   12: Transfer Voucher/ Challan Serial No.
+//   13: Whether TDS deposited by book entry?
+//   14: Minor Head
+function parseChallanSheet(workbook) {
+  // Find the "Challan" sheet (case-insensitive)
+  let sheet = null;
+  for (const name of workbook.SheetNames) {
+    if (/^challan$/i.test(name)) { sheet = workbook.Sheets[name]; break; }
+  }
+  if (!sheet) return [];
+
+  const rows = XLSX.utils.sheet_to_json(sheet, {
+    header: 1,
+    defval: null,
+    blankrows: false,
+    raw: true,
+  });
+
+  const str = (v) => (v === null || v === undefined) ? '' : String(v).trim();
+
+  // Find header row containing "S. No." or "Section Code"
+  let headerRowIdx = -1;
+  for (let i = 0; i < Math.min(rows.length, 10); i++) {
+    const cells = (rows[i] || []).map(str);
+    const joined = cells.join(' ');
+    if (/S\.\s*No|Section\s*Code|BSR\s*Code/i.test(joined)) {
+      headerRowIdx = i;
+      break;
+    }
+  }
+
+  if (headerRowIdx === -1) return [];
+
+  // Map column indices
+  const colMap = {
+    srNo:       0,  // S. No.
+    section:    1,  // Section Code
+    tds:        2,  // TDS(Rs.)
+    surcharge:  3,  // Surcharge (Rs.)
+    eduCess:    4,  // Education Cess (Rs.)
+    higherEduCess: 5,  // Higher Education Cess
+    interest:   6,  // Interest (Rs.)
+    other:      7,  // Other (Rs.)
+    feesAmount: 8,  // Fees Amount (Rs.)
+    chequeNo:   9,  // Cheque/DD No.
+    bsrCode:    10, // BSR Code
+    depositDate: 11, // Date on which Tax Deposited
+    challanNo:  12, // Transfer Voucher/ Challan Serial No.
+    bookEntry:  13, // Whether TDS deposited by book entry?
+    minorHead:  14, // Minor Head
+  };
+
+  // Try to map columns semantically from header text
+  const headerCells = (rows[headerRowIdx] || []).map(str);
+  for (let c = 0; c < headerCells.length; c++) {
+    const cell = headerCells[c];
+    if (!cell) continue;
+
+    if (/Section\s*Code/i.test(cell))                colMap.section = c;
+    else if (/^TDS/i.test(cell) && !/Surcharge/i.test(cell)) colMap.tds = c;
+    if (/Surcharge/i.test(cell))                     colMap.surcharge = c;
+    if (/Education\s*Cess/i.test(cell))              colMap.eduCess = c;
+    if (/Higher\s*Education/i.test(cell))             colMap.higherEduCess = c;
+    if (/^Interest/i.test(cell))                     colMap.interest = c;
+    if (/^Other/i.test(cell))                        colMap.other = c;
+    if (/Fees/i.test(cell))                          colMap.feesAmount = c;
+    if (/Cheque|DD\s*No/i.test(cell))                colMap.chequeNo = c;
+    if (/BSR/i.test(cell))                           colMap.bsrCode = c;
+    if (/Date.*Deposited/i.test(cell))               colMap.depositDate = c;
+    if (/Challan.*Serial|Transfer.*Voucher/i.test(cell)) colMap.challanNo = c;
+    if (/book\s*entry/i.test(cell))                  colMap.bookEntry = c;
+    if (/Minor\s*Head/i.test(cell))                  colMap.minorHead = c;
+  }
+
+  const challanRecords = [];
+
+  for (let i = headerRowIdx + 1; i < rows.length; i++) {
+    const row = rows[i] || [];
+    const cells = row.map(str);
+
+    // Skip empty rows
+    if (cells.every(c => !c)) continue;
+
+    const joined = cells.join(' ');
+
+    // Skip summary / total rows
+    if (/^Total|Grand|Sum/i.test(joined)) continue;
+
+    const srNo   = cells[colMap.srNo] || '';
+    const section = cells[colMap.section] || '';
+    const tds    = parseNum(row[colMap.tds]);
+
+    // Need at least a Section code or TDS value
+    if (!section && !tds) continue;
+
+    // Skip the header row itself if it appears again
+    if (/S\.\s*No/i.test(srNo) && /Section\s*Code/i.test(section)) continue;
+
+    challanRecords.push({
+      srNo,
+      section,
+      tds:        parseNum(row[colMap.tds]),
+      surcharge:  parseNum(row[colMap.surcharge]),
+      eduCess:    parseNum(row[colMap.eduCess]),
+      higherEduCess: parseNum(row[colMap.higherEduCess]),
+      interest:   parseNum(row[colMap.interest]),
+      other:      parseNum(row[colMap.other]),
+      feesAmount: parseNum(row[colMap.feesAmount]),
+      chequeNo:   cells[colMap.chequeNo] || '',
+      bsrCode:    cells[colMap.bsrCode] || '',
+      depositDate: normaliseDate(str(row[colMap.depositDate])),
+      challanNo:  cells[colMap.challanNo] || '',
+      bookEntry:  cells[colMap.bookEntry] || '',
+      minorHead:  cells[colMap.minorHead] || '',
+    });
+  }
+
+  return challanRecords;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
